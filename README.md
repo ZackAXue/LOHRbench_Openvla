@@ -188,31 +188,44 @@ python vla-scripts/merge_lora_weights_and_save.py \
 ```bash
 export OPENVLA_ROOT="/path/to/LOHRbench_Openvla/openvla-oft"
 
-python evaluate_openvla_debug.py \
-    --ckpt /path/to/checkpoint \
-    --step 150000 \
-    --builder_dir /path/to/lohrbench_rlds/lohrbench_rlds/0.1.0 \
-    --split train \
-    --episode_index 0 \
-    --num_episodes 5 \
-    --max_steps 500 \
-    --merge_lora \
-    --use_proprio
+python evaluate_openvla.py \
+    --checkpoint /path/to/checkpoint \
+    --step 100000 \
+    --benchmark-root /path/to/TAMPBench/benchmark/table-top \
+    --task-types tool_using \
+    --task-names repackage \
+    --merge-lora
 ```
 
-### Unified evaluation (via LoHRbench)
+### Server-based evaluation
+
+For multi-GPU or memory-constrained setups, use the server/client architecture:
+
+```bash
+# Terminal 1: Start the OpenVLA server
+python openvla_server.py --checkpoint /path/to/checkpoint --step 100000
+
+# Terminal 2: Run the evaluation client
+python lohrbench_client.py --benchmark-root /path/to/TAMPBench/benchmark/table-top
+```
+
+### Unified evaluation (via LoHRBench)
 
 ```bash
 export OPENVLA_ROOT="/path/to/LOHRbench_Openvla/openvla-oft"
 
-python ../baseline/eval.py \
+python TAMPBench/baseline/eval.py \
     --policy openvla \
     --checkpoint /path/to/checkpoint \
     --step 100000 \
-    --benchmark-root ../benchmark/table-top \
+    --benchmark-root /path/to/TAMPBench/benchmark/table-top \
     --use-action-chunking --chunk-size 8 \
     --merge-lora \
     --results-dir ./results --save-video
 ```
 
-See the [evaluation README](../baseline/README.md) for full argument documentation.
+See the [evaluation README](../TAMPBench/baseline/README.md) for full argument documentation.
+
+## Acknowledgements
+
+Built on top of [OpenVLA-OFT](https://github.com/openvla/openvla-oft).
