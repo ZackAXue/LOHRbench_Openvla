@@ -31,6 +31,12 @@ LOHRbench_Openvla/
 
 ## Setup
 
+There are two setup paths depending on your use case.
+
+### Path 1: Standalone OpenVLA env (training + offline eval only)
+
+Use this if you only need to train OpenVLA or run standalone offline evaluation (`evaluate_openvla_debug.py`). This does **not** require lohrbench or ManiSkill.
+
 ```bash
 cd openvla-oft
 
@@ -42,13 +48,50 @@ conda activate openvla
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 
 # Install Flash Attention 2
-pip install flash-attn --no-build-isolation
+pip install packaging ninja
+pip install flash-attn==2.5.5 --no-build-isolation
 
 # Install OpenVLA
 pip install -e .
 ```
 
 See [`openvla-oft/SETUP.md`](openvla-oft/SETUP.md) for detailed setup instructions.
+
+### Path 2: Combined env with lohrbench (for unified simulation-based evaluation)
+
+Use this if you need to run `baseline/eval.py --policy openvla`, which requires both lohrbench and openvla in the same Python environment.
+
+**Prerequisite:** You must have a working lohrbench conda environment set up per the [main repo README](../README.md) (with ManiSkill, SAPIEN, mplib, pddl, etc.).
+
+```bash
+# Activate your existing lohrbench conda environment
+conda activate <your_lohrbench_env>
+
+# Install openvla-oft WITHOUT dependencies (avoids torch version conflict)
+cd LOHRbench_Openvla/openvla-oft
+pip install --no-deps -e .
+
+# Install openvla-specific dependencies not already in lohrbench
+pip install accelerate "draccus==0.8.0" einops huggingface_hub json-numpy jsonlines \
+    "peft==0.11.1" protobuf rich "sentencepiece==0.1.99" "timm==0.9.10" \
+    "tokenizers==0.19.1" wandb "tensorflow==2.15.0" "tensorflow_datasets==4.9.3" \
+    "tensorflow_graphics==2021.12.3" "diffusers==0.30.3" imageio uvicorn fastapi
+
+# Install custom transformers fork (required — do NOT use stock transformers)
+pip install "transformers @ git+https://github.com/moojink/transformers-openvla-oft.git"
+
+# Install custom dlimp fork
+pip install "dlimp @ git+https://github.com/moojink/dlimp_openvla"
+
+# Install Flash Attention 2
+pip install packaging ninja
+pip install flash-attn==2.5.5 --no-build-isolation
+
+# Set OPENVLA_ROOT (add to your shell profile for persistence)
+export OPENVLA_ROOT="/path/to/LOHRbench_Openvla/openvla-oft"
+```
+
+> **Note:** `pip install --no-deps -e .` registers the openvla-oft package without overwriting the existing torch version in the lohrbench env. The lohrbench env's torch is compatible with openvla-oft in practice despite the version difference.
 
 ## Dataset
 
@@ -58,14 +101,15 @@ The HuggingFace dataset provides HDF5 files. OpenVLA requires **RLDS format**, s
 
 ## Data Format
 
-OpenVLA consumes data in **RLDS format** (TensorFlow Datasets). Convert the downloaded HDF5 trajectories to RLDS using the conversion script in [`TAMPBench/baseline/utils/data_convert.py`](../TAMPBench/baseline/utils/data_convert.py).
+OpenVLA consumes data in **RLDS format** (TensorFlow Datasets). Convert the downloaded HDF5 trajectories to RLDS using the conversion script in [`baseline/utils/data_convert.py`](../baseline/utils/data_convert.py).
 
 Expected RLDS data directory:
 ```
 /data1/LoHRbench_rlds/
-└── lohrbench_rlds/
-    └── 0.1.0/
-        └── ...  (TFRecord files)
+└── lohrbench_rlds/            # --data_root_dir points here
+    └── lohrbench_rlds/        # dataset subdirectory (matches --dataset_name)
+        └── 0.1.0/
+            └── ...  (TFRecord files)
 ```
 
 ## Training
@@ -119,10 +163,12 @@ Checkpoints are saved every 10,000 steps. The directory structure:
 ```
 /data1/checkpoints/openvla/
 └── openvla-7b+lohrbench_rlds+...+<step>_chkpt/
-    ├── adapter_config.json     # LoRA adapter config
-    ├── adapter_model.bin       # LoRA weights
-    ├── action_head.pt          # Action head weights
-    └── proprio_projector.pt    # Proprioception projector weights
+    ├── lora_adapter/                              # LoRA adapter directory
+    │   ├── adapter_config.json
+    │   └── adapter_model.safetensors
+    ├── action_head--<step>_checkpoint.pt           # Action head weights
+    ├── proprio_projector--<step>_checkpoint.pt     # Proprioception projector weights
+    └── dataset_statistics.json                    # Normalization statistics
 ```
 
 ### Merge LoRA Weights (Optional)
@@ -131,8 +177,8 @@ To merge LoRA adapters into the base model for faster inference:
 
 ```bash
 python vla-scripts/merge_lora_weights_and_save.py \
-    --checkpoint_dir /path/to/checkpoint \
-    --output_dir /path/to/merged_model
+    --base_checkpoint openvla/openvla-7b \
+    --lora_finetuned_checkpoint_dir /path/to/checkpoint
 ```
 
 ## Evaluation
@@ -142,44 +188,31 @@ python vla-scripts/merge_lora_weights_and_save.py \
 ```bash
 export OPENVLA_ROOT="/path/to/LOHRbench_Openvla/openvla-oft"
 
-python evaluate_openvla.py \
-    --checkpoint /path/to/checkpoint \
-    --step 100000 \
-    --benchmark-root /path/to/TAMPBench/benchmark/table-top \
-    --task-types tool_using \
-    --task-names repackage \
-    --merge-lora
+python evaluate_openvla_debug.py \
+    --ckpt /path/to/checkpoint \
+    --step 150000 \
+    --builder_dir /path/to/lohrbench_rlds/lohrbench_rlds/0.1.0 \
+    --split train \
+    --episode_index 0 \
+    --num_episodes 5 \
+    --max_steps 500 \
+    --merge_lora \
+    --use_proprio
 ```
 
-### Server-based evaluation
-
-For multi-GPU or memory-constrained setups, use the server/client architecture:
-
-```bash
-# Terminal 1: Start the OpenVLA server
-python openvla_server.py --checkpoint /path/to/checkpoint --step 100000
-
-# Terminal 2: Run the evaluation client
-python lohrbench_client.py --benchmark-root /path/to/TAMPBench/benchmark/table-top
-```
-
-### Unified evaluation (via TAMPBench)
+### Unified evaluation (via LoHRbench)
 
 ```bash
 export OPENVLA_ROOT="/path/to/LOHRbench_Openvla/openvla-oft"
 
-python TAMPBench/baseline/eval.py \
+python ../baseline/eval.py \
     --policy openvla \
     --checkpoint /path/to/checkpoint \
     --step 100000 \
-    --benchmark-root /path/to/TAMPBench/benchmark/table-top \
+    --benchmark-root ../benchmark/table-top \
     --use-action-chunking --chunk-size 8 \
     --merge-lora \
     --results-dir ./results --save-video
 ```
 
-See the [evaluation README](../TAMPBench/baseline/README.md) for full argument documentation.
-
-## Acknowledgements
-
-Built on top of [OpenVLA-OFT](https://github.com/openvla/openvla-oft).
+See the [evaluation README](../baseline/README.md) for full argument documentation.
